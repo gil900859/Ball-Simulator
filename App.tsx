@@ -28,11 +28,22 @@ export default function App() {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [balls, setBalls] = useState<Ball[]>([]);
+  
+  const ballsRef = useRef<Ball[]>([]);
+  const configRef = useRef<SimulationConfig>(config);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
   const boundaryPulseRef = useRef(0);
   const lastIdRef = useRef(0);
   const lastTimeRef = useRef<number>(performance.now());
+
+  useEffect(() => {
+    ballsRef.current = balls;
+  }, [balls]);
+
+  useEffect(() => {
+    configRef.current = config;
+  }, [config]);
 
   const createBall = (
     x: number, 
@@ -96,6 +107,7 @@ export default function App() {
       newBalls.push(createBall(x, y, vx, vy, config.ballSize, (i * (360 / Math.max(1, count))) % 360, 1, false));
     }
     setBalls(newBalls);
+    ballsRef.current = newBalls;
   }, [config.ballCount, config.mode, config.ballSize]);
 
   useEffect(() => {
@@ -106,8 +118,8 @@ export default function App() {
     setBalls(prev => prev.map(b => ({ ...b, baseRadius: config.ballSize })));
   }, [config.ballSize]);
 
-  const processBallInteractions = (ballList: Ball[]) => {
-    if (!config.ballCollisions && !config.clumpingEnabled) return ballList;
+  const processBallInteractions = (ballList: Ball[], currentConfig: SimulationConfig) => {
+    if (!currentConfig.ballCollisions && !currentConfig.clumpingEnabled) return ballList;
 
     const toRemove = new Set<number>();
     const updatedBalls = [...ballList];
@@ -131,7 +143,7 @@ export default function App() {
         const minDist = b1.baseRadius + b2.baseRadius;
 
         if (
-          config.clumpingEnabled && 
+          currentConfig.clumpingEnabled && 
           (b1.count + b2.count <= clumpLimit) &&
           b1.isClone && b2.isClone && 
           (now - b1.spawnTime > 200) && (now - b2.spawnTime > 200) && 
@@ -157,7 +169,7 @@ export default function App() {
             b1.vy = (b1.vy * m1 + b2.vy * m2) / totalCount;
             b1.x = (b1.x * m1 + b2.x * m2) / totalCount;
             b1.y = (b1.y * m1 + b2.y * m2) / totalCount;
-            b1.baseRadius = config.ballSize;
+            b1.baseRadius = currentConfig.ballSize;
             b1.hue = (b1.hue * m1 + b2.hue * m2) / totalCount;
             b1.color = `hsl(${b1.hue % 360}, 80%, 60%)`;
             b1.count = totalCount;
@@ -169,7 +181,7 @@ export default function App() {
           }
         }
 
-        if (config.ballCollisions && dist < minDist && dist > 0) {
+        if (currentConfig.ballCollisions && dist < minDist && dist > 0) {
           const angle = Math.atan2(dy, dx);
           const sin = Math.sin(angle);
           const cos = Math.cos(angle);
@@ -214,118 +226,118 @@ export default function App() {
     const dt = now - lastTimeRef.current;
     lastTimeRef.current = now;
 
+    const currentConfig = configRef.current;
     let containerUpdated = false;
-    let newContainerSize = config.mode === 'circular' ? config.boundaryRadius : config.rodGap;
+    let newContainerSize = currentConfig.mode === 'circular' ? currentConfig.boundaryRadius : currentConfig.rodGap;
 
-    setBalls(prevBalls => {
-      let currentBalls = [...prevBalls];
-      const addedBalls: Ball[] = [];
+    let currentBalls = [...ballsRef.current];
+    const addedBalls: Ball[] = [];
 
-      const updated = currentBalls.map(ball => {
-        let { x, y, vx, vy, pulseScale, baseRadius, hue, count, isClone, timeAtEdge } = ball;
+    const updatedAndFiltered = currentBalls.map(ball => {
+      let { x, y, vx, vy, pulseScale, baseRadius, hue, count, isClone, timeAtEdge } = ball;
 
-        if (config.mode === 'circular') {
-          vy += config.gravity;
-          vy *= config.friction;
-        } else {
-          vy = 0;
+      if (currentConfig.mode === 'circular') {
+        vy += currentConfig.gravity;
+        vy *= currentConfig.friction;
+      } else {
+        vy = 0;
+      }
+      vx *= currentConfig.friction;
+
+      x += vx * currentConfig.playbackSpeed;
+      y += vy * currentConfig.playbackSpeed;
+
+      let collided = false;
+      let isNearBorder = false;
+
+      if (currentConfig.mode === 'circular') {
+        const dist = Math.sqrt(x * x + y * y);
+        // Using 20px threshold for border proximity
+        if (dist + baseRadius >= currentConfig.boundaryRadius - 20) {
+          isNearBorder = true;
         }
-        vx *= config.friction;
 
-        x += vx * config.playbackSpeed;
-        y += vy * config.playbackSpeed;
-
-        let collided = false;
-
-        if (config.mode === 'circular') {
-          const dist = Math.sqrt(x * x + y * y);
-          if (dist + baseRadius >= config.boundaryRadius - 10) {
-            timeAtEdge += dt;
-          } else {
-            timeAtEdge = 0;
-          }
-
-          if (dist + baseRadius > config.boundaryRadius) {
-            collided = true;
-            const nx = dist === 0 ? 0 : x / dist;
-            const ny = dist === 0 ? 1 : y / dist;
-            const dot = vx * nx + vy * ny;
-            
-            if (Math.abs(dot) > 0.05) {
-              audioService.playNote(ball.frequency);
-              boundaryPulseRef.current = 1.0;
-              pulseScale = 1.0 + config.pulseIntensity;
-            }
-
-            vx -= 2 * dot * nx;
-            vy -= 2 * dot * ny;
-            const overlap = dist + baseRadius - config.boundaryRadius;
-            x -= nx * overlap;
-            y -= ny * overlap;
-          }
-
-          if (timeAtEdge > 2000) {
-            const angleToCenter = Math.atan2(-y, -x);
-            vx += Math.cos(angleToCenter) * 2.0;
-            vy += Math.sin(angleToCenter) * 2.0;
-            timeAtEdge = 0; 
-          }
-        } else {
-          const halfGap = config.rodGap / 2;
+        if (dist + baseRadius > currentConfig.boundaryRadius) {
+          collided = true;
+          const nx = dist === 0 ? 0 : x / dist;
+          const ny = dist === 0 ? 1 : y / dist;
+          const dot = vx * nx + vy * ny;
           
-          if (Math.abs(x) + baseRadius >= halfGap - 10) {
-            timeAtEdge += dt;
-          } else {
-            timeAtEdge = 0;
+          if (Math.abs(dot) > 0.05) {
+            audioService.playNote(ball.frequency);
+            boundaryPulseRef.current = 1.0;
+            pulseScale = 1.0 + currentConfig.pulseIntensity;
           }
 
-          if (x + baseRadius > halfGap) {
-            collided = true;
-            if (Math.abs(vx) > 0.05) {
-              audioService.playNote(ball.frequency);
-              boundaryPulseRef.current = 1.0;
-              pulseScale = 1.0 + config.pulseIntensity;
-            }
-            vx = -Math.abs(vx);
-            x = halfGap - baseRadius;
-          } else if (x - baseRadius < -halfGap) {
-            collided = true;
-            if (Math.abs(vx) > 0.05) {
-              audioService.playNote(ball.frequency);
-              boundaryPulseRef.current = 1.0;
-              pulseScale = 1.0 + config.pulseIntensity;
-            }
-            vx = Math.abs(vx);
-            x = -halfGap + baseRadius;
-          }
-
-          if (timeAtEdge > 2000) {
-            vx += (x > 0 ? -2.0 : 2.0);
-            timeAtEdge = 0;
-          }
+          vx -= 2 * dot * nx;
+          vy -= 2 * dot * ny;
+          const overlap = dist + baseRadius - currentConfig.boundaryRadius;
+          x -= nx * overlap;
+          y -= ny * overlap;
+        }
+      } else {
+        const halfGap = currentConfig.rodGap / 2;
+        // Using 20px threshold for border proximity
+        if (Math.abs(x) + baseRadius >= halfGap - 20) {
+          isNearBorder = true;
         }
 
-        if (collided) {
-          baseRadius *= config.ballSizeMultiplier;
-          if (config.containerSizeMultiplier !== 1.0) {
-            newContainerSize *= config.containerSizeMultiplier;
-            containerUpdated = true;
+        if (x + baseRadius > halfGap) {
+          collided = true;
+          if (Math.abs(vx) > 0.05) {
+            audioService.playNote(ball.frequency);
+            boundaryPulseRef.current = 1.0;
+            pulseScale = 1.0 + currentConfig.pulseIntensity;
           }
+          vx = -Math.abs(vx);
+          x = halfGap - baseRadius;
+        } else if (x - baseRadius < -halfGap) {
+          collided = true;
+          if (Math.abs(vx) > 0.05) {
+            audioService.playNote(ball.frequency);
+            boundaryPulseRef.current = 1.0;
+            pulseScale = 1.0 + currentConfig.pulseIntensity;
+          }
+          vx = Math.abs(vx);
+          x = -halfGap + baseRadius;
+        }
+      }
 
-          if (config.cloneOnBounce) {
-            const cloneVx = vx * 0.95 + (Math.random() - 0.5) * 0.5;
-            const cloneVy = vy * 0.95 + (Math.random() - 0.5) * 0.5;
-            addedBalls.push(createBall(x, y, cloneVx, cloneVy, config.ballSize, hue + 15, 1, true));
-          }
-        } else {
-          pulseScale += (1.0 - pulseScale) * 0.15;
+      // Update time at edge
+      if (isNearBorder) {
+        timeAtEdge += dt;
+      } else {
+        timeAtEdge = 0;
+      }
+
+      // If ball stays within 20px of boundary for > 3s, return null to signal removal
+      if (timeAtEdge > 3000) {
+        return null;
+      }
+
+      if (collided) {
+        baseRadius *= currentConfig.ballSizeMultiplier;
+        if (currentConfig.containerSizeMultiplier !== 1.0) {
+          newContainerSize *= currentConfig.containerSizeMultiplier;
+          containerUpdated = true;
         }
 
-        return { ...ball, x, y, vx, vy, pulseScale, baseRadius, timeAtEdge };
-      });
+        if (currentConfig.cloneOnBounce) {
+          const cloneVx = vx * 0.95 + (Math.random() - 0.5) * 0.5;
+          const cloneVy = vy * 0.95 + (Math.random() - 0.5) * 0.5;
+          addedBalls.push(createBall(x, y, cloneVx, cloneVy, currentConfig.ballSize, hue + 15, 1, true));
+        }
+      } else {
+        pulseScale += (1.0 - pulseScale) * 0.15;
+      }
 
-      return processBallInteractions([...updated, ...addedBalls]);
-    });
+      return { ...ball, x, y, vx, vy, pulseScale, baseRadius, timeAtEdge };
+    }).filter((b): b is Ball => b !== null); // Filter out removed balls
+
+    const finalBalls = processBallInteractions([...updatedAndFiltered, ...addedBalls], currentConfig);
+    
+    ballsRef.current = finalBalls;
+    setBalls(finalBalls);
 
     if (containerUpdated) {
       setConfig(prev => ({
@@ -338,7 +350,7 @@ export default function App() {
     if (boundaryPulseRef.current > 0) {
       boundaryPulseRef.current -= 0.05;
     }
-  }, [isPlaying, config]);
+  }, [isPlaying]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -346,27 +358,28 @@ export default function App() {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    const currentConfig = configRef.current;
     const width = canvas.width;
     const height = canvas.height;
     const centerX = width / 2;
     const centerY = height / 2;
 
-    ctx.fillStyle = `rgba(2, 6, 23, ${config.trailLength})`;
+    ctx.fillStyle = `rgba(2, 6, 23, ${currentConfig.trailLength})`;
     ctx.fillRect(0, 0, width, height);
 
     ctx.save();
     ctx.translate(centerX, centerY);
 
-    const pulseVal = boundaryPulseRef.current * config.pulseIntensity * 20;
+    const pulseVal = boundaryPulseRef.current * currentConfig.pulseIntensity * 20;
 
-    if (config.mode === 'circular') {
+    if (currentConfig.mode === 'circular') {
       ctx.beginPath();
-      ctx.arc(0, 0, Math.max(0, config.boundaryRadius + pulseVal), 0, Math.PI * 2);
+      ctx.arc(0, 0, Math.max(0, currentConfig.boundaryRadius + pulseVal), 0, Math.PI * 2);
       ctx.strokeStyle = `rgba(255, 255, 255, ${0.1 + boundaryPulseRef.current * 0.4})`;
       ctx.lineWidth = 4 + boundaryPulseRef.current * 8;
       ctx.stroke();
     } else {
-      const halfGap = config.rodGap / 2;
+      const halfGap = currentConfig.rodGap / 2;
       const rodWidth = 8 + pulseVal;
       
       [-halfGap, halfGap].forEach(posX => {
@@ -382,7 +395,7 @@ export default function App() {
       });
     }
 
-    balls.forEach(ball => {
+    ballsRef.current.forEach(ball => {
       const currentRadius = ball.baseRadius * ball.pulseScale;
       if (currentRadius <= 1) return;
       
@@ -400,7 +413,7 @@ export default function App() {
       updateSimulation();
       draw();
     });
-  }, [balls, config, updateSimulation]);
+  }, [isPlaying, updateSimulation]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(draw);
@@ -417,7 +430,6 @@ export default function App() {
 
   return (
     <div className="flex flex-col lg:flex-row h-screen w-full bg-slate-950 font-sans text-white overflow-hidden relative">
-      {/* Canvas Area */}
       <div className="flex-1 relative flex items-center justify-center overflow-hidden h-full">
         <canvas
           ref={canvasRef}
@@ -426,7 +438,6 @@ export default function App() {
           className="max-h-full max-w-full aspect-square"
         />
         
-        {/* Playback Controls Overlay */}
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-slate-900/90 backdrop-blur-lg p-3 rounded-full border border-slate-700 shadow-2xl z-10">
           <button 
             onClick={() => initBalls()} 
@@ -459,7 +470,6 @@ export default function App() {
             <Columns className="w-5 h-5" />
           </button>
 
-          {/* Settings Toggle for Mobile */}
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
             className={`lg:hidden p-2.5 rounded-full transition-all ${isSidebarOpen ? 'bg-indigo-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
@@ -468,7 +478,6 @@ export default function App() {
           </button>
         </div>
 
-        {/* Stats HUD */}
         <div className="absolute top-6 left-6 text-[10px] font-mono text-slate-500 bg-slate-900/50 backdrop-blur p-2.5 rounded-lg flex flex-col gap-1 border border-slate-800/50">
           <div>BALL UNITS: {totalBallUnits}</div>
           <div>SPRITES: {balls.length}</div>
@@ -476,7 +485,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Backdrop for Mobile Sidebar */}
       {isSidebarOpen && (
         <div 
           className="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 lg:hidden" 
@@ -484,7 +492,6 @@ export default function App() {
         />
       )}
 
-      {/* Sidebar / Drawer */}
       <div className={`
         fixed inset-y-0 right-0 z-50 w-full max-w-xs md:max-w-sm lg:static lg:translate-x-0 
         bg-slate-900 border-l border-slate-800 p-6 shadow-2xl flex flex-col transition-transform duration-300 ease-out
@@ -551,7 +558,7 @@ export default function App() {
 
         <div className="pt-6 border-t border-slate-800 opacity-50 text-center">
           <p className="text-[9px] text-slate-500 leading-relaxed uppercase tracking-widest text-wrap">
-            Inspired by @form_pulse<br/>STABILITY MODE: 10PX/2S BUFFER ACTIVE
+            Inspired by @form_pulse<br/>CLEANUP MODE: 20PX/3S REMOVAL ACTIVE
           </p>
         </div>
       </div>
