@@ -1,0 +1,5 @@
+{
+  "name": "Harmonic Pulse Simulator",
+  "description": "A satisfying ball bounce simulator inspired by @form_pulse, featuring rhythmic audio, geometric patterns, and AI-generated harmonic sequences using the Gemini API.",
+  "requestFramePermissions": []
+}
